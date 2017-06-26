@@ -1,0 +1,235 @@
+#!/bin/bash
+
+
+# This script is used to set up a test environment for nwepc. Two configuration are accepted:
+#
+# 	full: In this case the full environment shown in the figure underneath is instantiated
+#	simple: Only the MME-EMU and SAE-GW nodes are present. Only GTP Echo Req/Resp are supported
+#                                   __
+#                                __(  )__
+#  +=============+......        (        )        ......+=============+
+#  ||  MME-EMU  || NIC1 |<=====( IP Cloud )=====>| NIC1 ||  SAE-GW   ||
+#  +=============+``````        (__    __)        ``````+=============+
+#     | NIC 2 |                    (__)                    | NIC 2 |
+#      ```+```                                              ```+```
+#         |                                                    |
+#     +---+---+                                            +---+---+
+#     | L3 SW |                                            | L3 SW |
+#     +---+---+                                            +---+---+
+#         |                                                    |
+#    +----+----+                                          +----+----+
+#    | E-UTRAN |                                          |   PDN   |
+#    +---------+                                          +---------+
+#
+#	TODO: THE full ENVIRONMENT IS NOT WORKING PROPERLY (MME-EMU SEG-FAULTS)
+#
+# The script creates on namespace for each device and connects the namespaces using bridges
+# Between MME-EMU and SAE-GW OVS is used
+
+
+if [ $# -lt 1 ]; then
+        echo "The correct syntax is ./SETUP_ENV simple/full"
+	echo "Example: ./SETUP_ENV simple"
+        exit 0
+fi
+
+SETUP_TYPE=$1
+
+# Naming the namsepaces to emulate each node
+MME="ns-mmeEmu"
+SAE="ns-SAE"
+EUTRAN="ns-EUTRAN"
+PDN="ns-PDN"
+
+#################
+# First we create the namespaces corresponfind to each of the machines in the testbed
+
+if [ "$SETUP_TYPE" == 'simple' ] || [  "$SETUP_TYPE" == 'full' ] || [ "$SETUP_TYPE" == 'dev' ] ; then
+	# Adding only the emulator and the SAE gateway
+	ip netns add $MME
+	ip netns add $SAE
+fi
+
+if [ "$SETUP_TYPE" == 'full' ]; then
+	# Adding only the emulator and the SAE gateway
+	ip netns add $EUTRAN
+	ip netns add $PDN
+fi
+
+echo '--> Creating namespaces:'
+ip netns list
+
+sleep 1
+
+
+#################
+# Now we create the veth pairs and we move them to each namespace
+
+echo '--> Creating virtual network interfaces'
+	
+# interfaces
+sudo ip link add dev ovs1port1 type veth peer name ovs2port1
+sudo ip link add dev ovs2port2 type veth peer name ovs4port3
+sudo ip link add dev ovs2port3 type veth peer name ovs3port1
+sudo ip link add dev ovs3port2 type veth peer name ovs5port3
+sudo ip link add dev ovs3port3 type veth peer name ovs4port2
+sudo ip link add dev ovs4port1 type veth peer name ovs5port2
+sudo ip link add dev ovs5port1 type veth peer name ovs6port1
+
+sudo ifconfig ovs1port1 0.0.0.0 up
+sudo ifconfig ovs2port2 0.0.0.0 up
+sudo ifconfig ovs2port3 0.0.0.0 up
+sudo ifconfig ovs3port2 0.0.0.0 up
+sudo ifconfig ovs3port3 0.0.0.0 up
+sudo ifconfig ovs4port1 0.0.0.0 up
+sudo ifconfig ovs5port1 0.0.0.0 up
+sudo ifconfig ovs2port1 0.0.0.0 up
+sudo ifconfig ovs4port3 0.0.0.0 up
+sudo ifconfig ovs3port1 0.0.0.0 up
+sudo ifconfig ovs5port3 0.0.0.0 up
+sudo ifconfig ovs4port2 0.0.0.0 up
+sudo ifconfig ovs5port2 0.0.0.0 up
+sudo ifconfig ovs6port1 0.0.0.0 up 
+
+#ip link set eth-MME-C netns $SAE
+#ip link set eth-MME-U netns $SAE
+#ip link set eth-PDN netns $SAE
+
+sleep 1
+
+
+
+#################
+# Now we create the bridges that will bind interfaces together
+
+echo '--> Creating bridges to connect namespaces'
+
+
+# Bridge between MME-EMU and SAE for Control and User plane
+if [ "$SETUP_TYPE" == 'simple' ] || [  "$SETUP_TYPE" == 'full' ] || [ "$SETUP_TYPE" == 'dev' ] ; then
+
+	# The user plane bridge is going to be an openvswitch --> Here is where capturing of GTP packets is going to happen
+	# Start Openvswittch
+
+	echo '--> OVS ########################***************************'
+	# ./start_host_OVS
+
+	sleep 8
+
+	OVS_BR="ovs-EMU-SAE-U"
+	OVSDB="unix:/usr/local/var/run/openvswitch/db.sock" #We need to have OVS running in the host system with this dB
+	
+	ovs-vsctl --db=$OVSDB --if-exists del-br OVS1
+	ovs-vsctl --db=$OVSDB --if-exists del-br OVS2
+	ovs-vsctl --db=$OVSDB --if-exists del-br OVS3
+	ovs-vsctl --db=$OVSDB --if-exists del-br OVS4
+	ovs-vsctl --db=$OVSDB --if-exists del-br OVS5
+	ovs-vsctl --db=$OVSDB --if-exists del-br OVS6
+	
+	ovs-vsctl --db=$OVSDB add-br OVS1 
+	ovs-vsctl --db=$OVSDB add-br OVS2
+	ovs-vsctl --db=$OVSDB add-br OVS3
+	ovs-vsctl --db=$OVSDB add-br OVS4
+	ovs-vsctl --db=$OVSDB add-br OVS5
+	ovs-vsctl --db=$OVSDB add-br OVS6
+	
+	#ovs-vsctl --db=$OVSDB add-port $OVS_BR "eth-SAE-host-U"
+	#ovs-vsctl --db=$OVSDB add-port $OVS_BR "eth-MME-host-U"
+	
+	ovs-ofctl del-flows OVS1
+	ovs-ofctl del-flows OVS2
+	ovs-ofctl del-flows OVS3
+	ovs-ofctl del-flows OVS4
+	ovs-ofctl del-flows OVS5
+	ovs-ofctl del-flows OVS6
+	
+	# ovs-ofctl add-flow $OVS_BR "priority=0 in_port=1 actions=output:2"
+	# ovs-ofctl add-flow $OVS_BR "priority=0 in_port=2 actions=output:1"
+	
+	#sudo ovs-ofctl -O OpenFlow13 add-flow $OVS_BR in_port=2,dl_type=0x8809,synce_event_flag=0x18/0xff,actions=ql_ssm:qL=0xe,output:1
+	#sudo ovs-ofctl -O OpenFlow13 add-flow $OVS_BR in_port=2,dl_type=0x88F7,actions=ptp_timestamp,output:1
+	
+	#sudo ovs-ofctl -O OpenFlow13 add-flow $OVS_BR in_port=2,dl_type=0x8000,ip_dst=224.0.0.107/255.255.255.248,udp,udp_dst=319,actions=ptp_timestamp,output:1
+	
+	## OVS1
+	ovs-vsctl --db=$OVSDB add-port OVS1 "ovs1port1"
+    ovs-vsctl set-fail-mode OVS1 secure
+	ovs-vsctl set-controller OVS1 tcp:192.168.50.51:6633
+	ovs-vsctl set bridge OVS1 other-config:hwaddr=00:00:00:00:00:01 other-config:dp-desc=OVS1
+	ovs-vsctl set bridge OVS1 protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
+	
+	## OVS2
+	ovs-vsctl --db=$OVSDB add-port OVS2 "ovs2port1"
+	ovs-vsctl --db=$OVSDB add-port OVS2 "ovs2port2"
+	ovs-vsctl --db=$OVSDB add-port OVS2 "ovs2port3"
+    ovs-vsctl set-fail-mode OVS2 secure
+	ovs-vsctl set-controller OVS2 tcp:192.168.50.51:6633
+	ovs-vsctl set bridge OVS2 other-config:hwaddr=00:00:00:00:00:02 other-config:dp-desc=OVS2
+	ovs-vsctl set bridge OVS2 protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
+	
+	## OVS3
+	ovs-vsctl --db=$OVSDB add-port OVS3 "ovs3port1"
+	ovs-vsctl --db=$OVSDB add-port OVS3 "ovs3port2"
+	ovs-vsctl --db=$OVSDB add-port OVS3 "ovs3port3"
+    ovs-vsctl set-fail-mode OVS3 secure
+	ovs-vsctl set-controller OVS3 tcp:192.168.50.51:6633
+	ovs-vsctl set bridge OVS3 other-config:hwaddr=00:00:00:00:00:03 other-config:dp-desc=OVS3
+	ovs-vsctl set bridge OVS3 protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
+	
+	## OVS4
+	ovs-vsctl --db=$OVSDB add-port OVS4 "ovs4port1"
+	ovs-vsctl --db=$OVSDB add-port OVS4 "ovs4port2"
+	ovs-vsctl --db=$OVSDB add-port OVS4 "ovs4port3"
+    ovs-vsctl set-fail-mode OVS4 secure
+	ovs-vsctl set-controller OVS4 tcp:192.168.50.51:6633
+	ovs-vsctl set bridge OVS4 other-config:hwaddr=00:00:00:00:00:04 other-config:dp-desc=OVS4
+	ovs-vsctl set bridge OVS4 protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
+	
+	## OVS5
+	ovs-vsctl --db=$OVSDB add-port OVS5 "ovs5port1"
+	ovs-vsctl --db=$OVSDB add-port OVS5 "ovs5port2"
+	ovs-vsctl --db=$OVSDB add-port OVS5 "ovs5port3"
+    ovs-vsctl set-fail-mode OVS5 secure
+	ovs-vsctl set-controller OVS5 tcp:192.168.13.2:6633
+	ovs-vsctl set bridge OVS5 other-config:hwaddr=00:00:00:00:00:05 other-config:dp-desc=OVS5
+	ovs-vsctl set bridge OVS5 protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
+	
+	## OVS6
+	ovs-vsctl --db=$OVSDB add-port OVS6 "ovs6port1"
+    ovs-vsctl set-fail-mode OVS6 secure
+	ovs-vsctl set-controller OVS6 tcp:192.168.50.51:6633
+	ovs-vsctl set bridge OVS6 other-config:hwaddr=00:00:00:00:00:06 other-config:dp-desc=OVS6
+	ovs-vsctl set bridge OVS6 protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
+	
+
+	#ifconfig $OVS_BR 0.0.0.0 up
+	#ifconfig "eth-SAE-host-U" up
+	#ifconfig "eth-MME-host-U" up
+
+	sleep 1
+
+fi
+
+
+
+
+
+####################
+# Launching xterms with the different namespaces
+
+echo '--> Launching xterms for each namespace'
+
+
+
+###################
+# Launching wireshark
+
+# NOTE-1: To view GTP-U capture on eth-MME-host-U or eth-SAE-host-U
+# NOTE-2: Do not capture on the openvswitch bridge because it does not send packets up the host network stack
+ if [ "$SETUP_TYPE" != 'dev' ]; then
+
+	# wireshark &
+
+ fi
+
+
